@@ -1,0 +1,217 @@
+import React, { useState, useEffect } from 'react';
+import { SafeAreaView, View, Text, TextInput, TouchableOpacity, FlatList, Alert, ScrollView } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+
+// Simple styles (inline to keep single-file)
+const styles = {
+  container: { flex: 1, padding: 16, backgroundColor: '#f7f7fb' },
+  header: { fontSize: 22, fontWeight: '700', marginBottom: 12 },
+  label: { fontSize: 12, marginTop: 8 },
+  input: { borderWidth: 1, borderColor: '#ddd', borderRadius: 8, padding: 8, backgroundColor: '#fff', marginTop: 6 },
+  button: { marginTop: 10, padding: 10, borderRadius: 8, backgroundColor: '#2563eb', alignItems: 'center' },
+  buttonText: { color: 'white', fontWeight: '600' },
+  card: { backgroundColor: '#fff', padding: 12, borderRadius: 8, marginTop: 10, borderWidth: 1, borderColor: '#eee' },
+  row: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }
+};
+
+const STORAGE_KEY = '@agenda_teknisi_v1';
+
+export default function App() {
+  // Settings
+  const [bossPct, setBossPct] = useState('40');
+  const [tech1Pct, setTech1Pct] = useState('30');
+  const [tech2Pct, setTech2Pct] = useState('30');
+
+  // Lists
+  const [jobs, setJobs] = useState([]); // each job: {id, date, nota, device, problem, price, modal, tech}
+  const [expenses, setExpenses] = useState([]); // {id, date, desc, amount}
+
+  // Job form
+  const [date, setDate] = useState('');
+  const [nota, setNota] = useState('');
+  const [device, setDevice] = useState('');
+  const [problem, setProblem] = useState('');
+  const [price, setPrice] = useState('');
+  const [modal, setModal] = useState('');
+  const [tech, setTech] = useState('Odi'); // default tech names
+
+  // Expense form
+  const [expDate, setExpDate] = useState('');
+  const [expDesc, setExpDesc] = useState('');
+  const [expAmount, setExpAmount] = useState('');
+
+  useEffect(() => { loadData(); }, []);
+
+  // Persist/load
+  async function loadData() {
+    try {
+      const raw = await AsyncStorage.getItem(STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        setJobs(parsed.jobs || []);
+        setExpenses(parsed.expenses || []);
+        setBossPct(parsed.bossPct ?? '40');
+        setTech1Pct(parsed.tech1Pct ?? '30');
+        setTech2Pct(parsed.tech2Pct ?? '30');
+      }
+    } catch (e) { console.warn('load error', e); }
+  }
+
+  async function saveData(newJobs = jobs, newExpenses = expenses) {
+    try {
+      await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify({ jobs: newJobs, expenses: newExpenses, bossPct, tech1Pct, tech2Pct }));
+    } catch (e) { console.warn('save error', e); }
+  }
+
+  function clearForm() { setDate(''); setNota(''); setDevice(''); setProblem(''); setPrice(''); setModal(''); setTech('Odi'); }
+
+  function addJob() {
+    if (!nota || !price) { Alert.alert('Input kurang', 'Mohon isi minimal No. Nota dan Harga'); return; }
+    const j = { id: Date.now().toString(), date: date || new Date().toISOString().slice(0,10), nota, device, problem, price: Number(price), modal: Number(modal||0), tech };
+    const newJobs = [j, ...jobs];
+    setJobs(newJobs);
+    saveData(newJobs, expenses);
+    clearForm();
+  }
+
+  function addExpense() {
+    if (!expDesc || !expAmount) { Alert.alert('Input kurang', 'Mohon isi deskripsi dan jumlah pengeluaran'); return; }
+    const e = { id: Date.now().toString(), date: expDate || new Date().toISOString().slice(0,10), desc: expDesc, amount: Number(expAmount) };
+    const newExpenses = [e, ...expenses];
+    setExpenses(newExpenses);
+    saveData(jobs, newExpenses);
+    setExpDesc(''); setExpAmount(''); setExpDate('');
+  }
+
+  function removeJob(id) {
+    const newJobs = jobs.filter(j => j.id !== id);
+    setJobs(newJobs); saveData(newJobs, expenses);
+  }
+
+  function removeExpense(id) {
+    const newExpenses = expenses.filter(e => e.id !== id);
+    setExpenses(newExpenses); saveData(jobs, newExpenses);
+  }
+
+  // Calculations
+  const totalIncome = jobs.reduce((s, j) => s + (j.price || 0), 0);
+  const totalModal = jobs.reduce((s, j) => s + (j.modal || 0), 0);
+  const totalExpenses = expenses.reduce((s, e) => s + (e.amount || 0), 0);
+  const grossProfit = totalIncome - totalModal - totalExpenses;
+
+  // split based on settings
+  const bossShare = (grossProfit > 0) ? (grossProfit * (Number(bossPct)/100)) : 0;
+  const tech1Share = (grossProfit > 0) ? (grossProfit * (Number(tech1Pct)/100)) : 0;
+  const tech2Share = (grossProfit > 0) ? (grossProfit * (Number(tech2Pct)/100)) : 0;
+
+  // Alternatively compute per-tech revenue from jobs (useful if boss wants take from profit only)
+  const techEarningsByJob = { Odi: 0, Ahue: 0 };
+  jobs.forEach(j => {
+    // job profit = price - modal - (share of general expenses proportional to job price)
+    const jobProfit = j.price - j.modal; // simple per-job profit (ignores shared expenses distribution)
+    if (j.tech === 'Odi') techEarningsByJob.Odi += jobProfit;
+    else techEarningsByJob.Ahue += jobProfit;
+  });
+
+  function exportCSV() {
+    // simple CSV text
+    let csv = 'type,date,nota_or_desc,device_or_empty,tech,price_or_amount,modal\n';
+    jobs.forEach(j => { csv += `job,${j.date},${j.nota},${j.device},${j.tech},${j.price},${j.modal}\n`; });
+    expenses.forEach(e => { csv += `expense,${e.date},${e.desc},, ,${e.amount},\n`; });
+    // save to AsyncStorage as lastExport
+    AsyncStorage.setItem('@agenda_teknisi_export', csv);
+    Alert.alert('CSV siap', 'CSV disimpan ke storage dengan key @agenda_teknisi_export — gunakan developer tools untuk mengambil file.');
+  }
+
+  return (
+    <SafeAreaView style={styles.container}>
+      <ScrollView>
+        <Text style={styles.header}>Agenda Kerja & Perhitungan Gaji - 2 Teknisi</Text>
+
+        <Text style={styles.label}>Pengaturan Pembagian (%) — Boss / Odi / Ahue</Text>
+        <View style={{flexDirection:'row', gap:8}}>
+          <TextInput style={[styles.input,{flex:1}]} keyboardType='numeric' value={bossPct} onChangeText={t=>setBossPct(t)} placeholder='Boss %' />
+          <TextInput style={[styles.input,{flex:1}]} keyboardType='numeric' value={tech1Pct} onChangeText={t=>setTech1Pct(t)} placeholder='Odi %' />
+          <TextInput style={[styles.input,{flex:1}]} keyboardType='numeric' value={tech2Pct} onChangeText={t=>setTech2Pct(t)} placeholder='Ahue %' />
+        </View>
+
+        <View style={styles.card}>
+          <Text style={{fontWeight:'700'}}>Tambah Pekerjaan (Job)</Text>
+          <Text style={styles.label}>Tanggal (YYYY-MM-DD)</Text>
+          <TextInput style={styles.input} value={date} onChangeText={setDate} placeholder='2025-09-08' />
+          <Text style={styles.label}>No. Nota</Text>
+          <TextInput style={styles.input} value={nota} onChangeText={setNota} placeholder='001' />
+          <Text style={styles.label}>Device / Kerusakan</Text>
+          <TextInput style={styles.input} value={device} onChangeText={setDevice} placeholder='Oppo A5s' />
+          <TextInput style={styles.input} value={problem} onChangeText={setProblem} placeholder='Ganti LCD' />
+          <Text style={styles.label}>Harga / Pemasukan</Text>
+          <TextInput style={styles.input} value={price} onChangeText={setPrice} keyboardType='numeric' placeholder='250000' />
+          <Text style={styles.label}>Modal (biaya beli sparepart untuk job ini)</Text>
+          <TextInput style={styles.input} value={modal} onChangeText={setModal} keyboardType='numeric' placeholder='90000' />
+          <Text style={styles.label}>Teknisi</Text>
+          <View style={{flexDirection:'row', gap:8, marginTop:6}}>
+            <TouchableOpacity onPress={()=>setTech('Odi')} style={{flex:1, padding:8, borderRadius:8, backgroundColor: tech==='Odi' ? '#10b981' : '#e6f4ea', alignItems:'center'}}><Text>Odi</Text></TouchableOpacity>
+            <TouchableOpacity onPress={()=>setTech('Ahue')} style={{flex:1, padding:8, borderRadius:8, backgroundColor: tech==='Ahue' ? '#10b981' : '#e6f4ea', alignItems:'center'}}><Text>Ahue</Text></TouchableOpacity>
+          </View>
+          <TouchableOpacity style={styles.button} onPress={addJob}><Text style={styles.buttonText}>Simpan Job</Text></TouchableOpacity>
+        </View>
+
+        <View style={styles.card}>
+          <Text style={{fontWeight:'700'}}>Tambah Pengeluaran / Biaya Lain</Text>
+          <TextInput style={styles.input} value={expDate} onChangeText={setExpDate} placeholder='2025-09-08' />
+          <TextInput style={styles.input} value={expDesc} onChangeText={setExpDesc} placeholder='Beli lem, kabel, dll' />
+          <TextInput style={styles.input} value={expAmount} onChangeText={setExpAmount} keyboardType='numeric' placeholder='50000' />
+          <TouchableOpacity style={styles.button} onPress={addExpense}><Text style={styles.buttonText}>Simpan Pengeluaran</Text></TouchableOpacity>
+        </View>
+
+        <View style={styles.card}>
+          <Text style={{fontWeight:'700'}}>Ringkasan</Text>
+          <Text>Total Pemasukan: Rp {totalIncome.toLocaleString()}</Text>
+          <Text>Total Modal (sparepart per job): Rp {totalModal.toLocaleString()}</Text>
+          <Text>Total Pengeluaran lain: Rp {totalExpenses.toLocaleString()}</Text>
+          <Text style={{marginTop:6}}>Laba Bersih (Income - Modal - Pengeluaran): Rp {grossProfit.toLocaleString()}</Text>
+          <Text style={{marginTop:6}}>Pembagian Laba (berdasarkan persen):</Text>
+          <Text>Boss: Rp {Math.max(0, bossShare).toLocaleString()}</Text>
+          <Text>Odi: Rp {Math.max(0, tech1Share).toLocaleString()}</Text>
+          <Text>Ahue: Rp {Math.max(0, tech2Share).toLocaleString()}</Text>
+          <Text style={{marginTop:6}}>Perhitungan sederhana per teknisi berdasarkan job profit (price - modal) — tanpa bagi beban pengeluaran bersama:</Text>
+          <Text>Odi (job-based): Rp {Math.max(0, techEarningsByJob.Odi).toLocaleString()}</Text>
+          <Text>Ahue (job-based): Rp {Math.max(0, techEarningsByJob.Ahue).toLocaleString()}</Text>
+
+          <TouchableOpacity style={[styles.button,{backgroundColor:'#6b7280'}]} onPress={exportCSV}><Text style={styles.buttonText}>Export CSV (simpel)</Text></TouchableOpacity>
+        </View>
+
+        <View style={styles.card}>
+          <Text style={{fontWeight:'700'}}>Daftar Job (terbaru)</Text>
+          {jobs.length===0 && <Text>Tidak ada job</Text>}
+          <FlatList data={jobs} keyExtractor={i=>i.id} renderItem={({item})=> (
+            <View style={{padding:8,borderBottomWidth:1,borderColor:'#f0f0f0'}}>
+              <View style={styles.row}><Text style={{fontWeight:'600'}}>{item.nota} — {item.device}</Text><Text>{item.date}</Text></View>
+              <Text>{item.problem}</Text>
+              <Text>Teknisi: {item.tech} | Harga: Rp {item.price.toLocaleString()} | Modal: Rp {item.modal.toLocaleString()}</Text>
+              <View style={{flexDirection:'row', marginTop:6}}>
+                <TouchableOpacity onPress={()=>removeJob(item.id)} style={{padding:6, borderRadius:6, backgroundColor:'#ef4444'}}><Text style={{color:'white'}}>Hapus</Text></TouchableOpacity>
+              </View>
+            </View>
+          )} />
+        </View>
+
+        <View style={styles.card}>
+          <Text style={{fontWeight:'700'}}>Daftar Pengeluaran</Text>
+          {expenses.length===0 && <Text>Tidak ada pengeluaran</Text>}
+          <FlatList data={expenses} keyExtractor={i=>i.id} renderItem={({item})=> (
+            <View style={{padding:8,borderBottomWidth:1,borderColor:'#f0f0f0'}}>
+              <View style={styles.row}><Text style={{fontWeight:'600'}}>{item.desc}</Text><Text>{item.date}</Text></View>
+              <Text>Rp {item.amount.toLocaleString()}</Text>
+              <View style={{flexDirection:'row', marginTop:6}}>
+                <TouchableOpacity onPress={()=>removeExpense(item.id)} style={{padding:6, borderRadius:6, backgroundColor:'#ef4444'}}><Text style={{color:'white'}}>Hapus</Text></TouchableOpacity>
+              </View>
+            </View>
+          )} />
+        </View>
+
+        <View style={{height:60}} />
+      </ScrollView>
+    </SafeAreaView>
+  );
+}
